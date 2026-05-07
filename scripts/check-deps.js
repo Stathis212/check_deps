@@ -18,7 +18,7 @@ const PACKAGES = [
     watchMajorBump: true,
     // Add known EOL dates here: { version, date }
     eolDates: [
-      { version: "21", date: "2025-06-30" }, // June 2025 EOL — update as needed
+      { version: "21", maintenanceDate: "2025-06-30", eolDate: "2026-06-30" },
     ],
   },
   {
@@ -142,32 +142,51 @@ async function sendSlackAlert(message) {
 
 function checkEolDates(pkg) {
   const alerts = [];
-  for (const eol of pkg.eolDates || []) {
-    const days = daysFromNow(eol.date);
-    const eolFormatted = new Date(eol.date).toLocaleDateString("en-GB", { day:"numeric", month:"long", year:"numeric" });
+  const fmt = (d) => new Date(d).toLocaleDateString("en-GB", { day:"numeric", month:"long", year:"numeric" });
 
-    if (days > EOL_WARN_DAYS_BEFORE) {
-      // Too far out — no alert yet
+  for (const eol of pkg.eolDates || []) {
+
+    // Maintenance date (if defined)
+    if (eol.maintenanceDate) {
+      const days = daysFromNow(eol.maintenanceDate);
+      if (days <= 0) {
+        alerts.push(
+          `*[MAINTENANCE MODE]* ${pkg.name} v${eol.version} entered maintenance mode on ${fmt(eol.maintenanceDate)}.\n` +
+          `Security fixes only — no new features. Full EOL: ${fmt(eol.eolDate || eol.date)}.\n` +
+          `Releases: https://github.com/${pkg.repo}/releases`
+        );
+      } else if (days <= EOL_WARN_DAYS_BEFORE) {
+        alerts.push(
+          `*[MAINTENANCE UPCOMING]* ${pkg.name} v${eol.version} enters maintenance mode in *${days} days* (${fmt(eol.maintenanceDate)}).\n` +
+          `After this date: security fixes only, no new features.\n` +
+          `Full EOL follows on ${fmt(eol.eolDate || eol.date)}.\n` +
+          `Releases: https://github.com/${pkg.repo}/releases`
+        );
+      }
+    }
+
+    // EOL date
+    const eolDateStr = eol.eolDate || eol.date;
+    if (!eolDateStr) continue;
+    const daysToEol = daysFromNow(eolDateStr);
+
+    if (daysToEol > EOL_WARN_DAYS_BEFORE) {
       continue;
-    } else if (days > 0) {
-      // Upcoming — always alert regardless of state
+    } else if (daysToEol > 0) {
       alerts.push(
-        `*[EOL UPCOMING]* ${pkg.name} v${eol.version} reaches end-of-life in *${days} days* (${eolFormatted}).\n` +
-        `Action required: plan your upgrade before this date.\n` +
+        `*[EOL UPCOMING]* ${pkg.name} v${eol.version} reaches end-of-life in *${daysToEol} days* (${fmt(eolDateStr)}).\n` +
+        `No security patches after this date. Plan your upgrade now.\n` +
         `Releases: https://github.com/${pkg.repo}/releases`
       );
     } else {
-      // Already past — alert once and mark as done
-      const stateKey = `${pkg.repo}:eol-passed:${eol.version}`;
       alerts.push(
-        `*[EOL PASSED]* ${pkg.name} v${eol.version} reached end-of-life on ${eolFormatted}.\n` +
-        `No further security patches will be issued. Upgrade immediately.\n` +
+        `*[EOL PASSED]* ${pkg.name} v${eol.version} reached end-of-life on ${fmt(eolDateStr)}.\n` +
+        `No further patches will be issued. Upgrade immediately.\n` +
         `Releases: https://github.com/${pkg.repo}/releases`
       );
-      // Return the stateKey so caller can mark it seen after one past-EOL alert
-      alerts._eolPassedKey = stateKey;
     }
   }
+
   return alerts;
 }
 

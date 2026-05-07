@@ -106,7 +106,7 @@
 const PACKAGES = [
   {
     name: "Sitecore JSS", repo: "Sitecore/jss",
-    eolDates: [{ version:"21", date:"2025-06-30" }],
+    eolDates: [{ version:"21", maintenanceDate:"2025-06-30", eolDate:"2026-06-30" }],
     releases: "https://github.com/Sitecore/jss/releases",
     docs: "https://doc.sitecore.com/xp/en/developers/hd/latest/sitecore-headless-development/sitecore-javascript-rendering-sdks--jss-.html"
   },
@@ -169,15 +169,32 @@ async function fetchAdvisories(pkg) {
 }
 
 function renderEolBanners(pkg) {
+  const fmt = (d) => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"});
   return (pkg.eolDates||[]).map(eol => {
-    const days = daysFromNow(eol.date);
-    const fmt = new Date(eol.date).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"});
-    if(days > 90) return "";
-    if(days > 0) {
-      const urgency = days <= 30 ? "color:var(--danger-text);" : "";
-      return `<div class="eol-banner upcoming"><strong>EOL in ${days} days</strong> — v${eol.version} reaches end-of-life on ${fmt}. <span style="${urgency}">Plan your upgrade now.</span></div>`;
+    const banners = [];
+
+    // Maintenance date banner
+    if (eol.maintenanceDate) {
+      const days = daysFromNow(eol.maintenanceDate);
+      if (days <= 0) {
+        banners.push(`<div class="eol-banner upcoming"><strong>Maintenance mode</strong> — v${eol.version} has been in maintenance since ${fmt(eol.maintenanceDate)}. Security fixes only, no new features. Full EOL: ${fmt(eol.eolDate||eol.date)}.</div>`);
+      } else if (days <= 90) {
+        banners.push(`<div class="eol-banner upcoming"><strong>Maintenance in ${days} days</strong> — v${eol.version} enters maintenance mode on ${fmt(eol.maintenanceDate)}. New features will stop; security fixes continue until ${fmt(eol.eolDate||eol.date)}.</div>`);
+      }
     }
-    return `<div class="eol-banner passed"><strong>EOL passed</strong> — v${eol.version} reached end-of-life on ${fmt}. No further security patches. Upgrade immediately.</div>`;
+
+    // EOL date banner
+    const eolDateStr = eol.eolDate || eol.date;
+    if (!eolDateStr) return banners.join("");
+    const daysToEol = daysFromNow(eolDateStr);
+    if (daysToEol > 90) return banners.join("");
+    if (daysToEol > 0) {
+      const urgency = daysToEol <= 30 ? "color:var(--danger-text);" : "";
+      banners.push(`<div class="eol-banner upcoming"><strong>EOL in ${daysToEol} days</strong> — v${eol.version} reaches end-of-life on ${fmt(eolDateStr)}. <span style="${urgency}">No security patches after this date.</span></div>`);
+    } else {
+      banners.push(`<div class="eol-banner passed"><strong>EOL passed</strong> — v${eol.version} reached end-of-life on ${fmt(eolDateStr)}. Upgrade immediately.</div>`);
+    }
+    return banners.join("");
   }).join("");
 }
 
