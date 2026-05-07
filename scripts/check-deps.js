@@ -1,12 +1,8 @@
 /**
  * Dependency Monitor
- * Checks GitHub releases + security advisories (CVEs) for key stack packages.
- * Runs 3x daily via GitHub Actions (morning / noon / afternoon).
- *
- * Setup:
- *   1. Add SLACK_WEBHOOK_URL to your repo secrets (optional but recommended)
- *   2. GITHUB_TOKEN is provided automatically by GitHub Actions
- *   3. Run manually first to build initial state
+ * - Tracks upcoming EOL dates (warns up to 90 days before)
+ * - Re-alerts on CVEs published within the last 30 days (rolling window)
+ * - Runs 3x daily via GitHub Actions
  */
 
 const https = require("https");
@@ -20,26 +16,29 @@ const PACKAGES = [
     repo: "Sitecore/jss",
     npmPkg: "@sitecore-jss/sitecore-jss",
     watchMajorBump: true,
-    knownEolVersions: [],
+    // Add known EOL dates here: { version, date }
+    eolDates: [
+      { version: "21", date: "2025-06-30" }, // June 2025 EOL — update as needed
+    ],
   },
   {
     name: "Next.js",
     repo: "vercel/next.js",
     npmPkg: "next",
     watchMajorBump: true,
-    knownEolVersions: ["14"],
+    eolDates: [
+      { version: "14", date: "2024-10-21" }, // Already EOL
+    ],
   },
   {
     name: "Sitecore XM Cloud Starter Kit",
     repo: "Sitecore/xm-cloud-introduction",
     npmPkg: null,
     watchMajorBump: true,
-    knownEolVersions: [],
+    eolDates: [],
   },
 ];
 
-// npm packages to check for CVEs via GitHub Advisory Database
-// Add any package your project depends on
 const NPM_PACKAGES_TO_AUDIT = [
   "next",
   "@sitecore-jss/sitecore-jss",
@@ -48,37 +47,32 @@ const NPM_PACKAGES_TO_AUDIT = [
   "react-dom",
 ];
 
+// CVEs published within this many days will always be included in alerts
+const CVE_ROLLING_WINDOW_DAYS = 30;
+
+// Warn about EOL this many days before the date
+const EOL_WARN_DAYS_BEFORE = 90;
+
 const STATE_FILE = ".dep-monitor-state.json";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function githubGet(path) {
   return new Promise((resolve, reject) => {
-    const headers = {
-      "User-Agent": "dep-monitor/1.0",
-      Accept: "application/vnd.github+json",
-    };
-    if (process.env.GITHUB_TOKEN) {
-      headers["Authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`;
-    }
-    https
-      .get({ hostname: "api.github.com", path, headers }, (res) => {
-        let data = "";
-        res.on("data", (c) => (data += c));
-        res.on("end", () => {
-          if (res.statusCode === 404) { resolve([]); return; }
-          if (res.statusCode !== 200) {
-            reject(new Error(`HTTP ${res.statusCode} for ${path}`));
-          } else {
-            resolve(JSON.parse(data));
-          }
-        });
-      })
-      .on("error", reject);
+    const headers = { "User-Agent": "dep-monitor/1.0", Accept: "application/vnd.github+json" };
+    if (process.env.GITHUB_TOKEN) headers["Authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`;
+    https.get({ hostname: "api.github.com", path, headers }, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        if (res.statusCode === 404) { resolve([]); return; }
+        if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}`));
+        else resolve(JSON.parse(data));
+      });
+    }).on("error", reject);
   });
 }
 
-// GitHub GraphQL — needed for the Advisory Database (REST doesn't expose it well)
 function githubGraphQL(query) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ query });
@@ -87,20 +81,15 @@ function githubGraphQL(query) {
       "Content-Type": "application/json",
       "Content-Length": body.length,
     };
-    if (process.env.GITHUB_TOKEN) {
-      headers["Authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`;
-    }
+    if (process.env.GITHUB_TOKEN) headers["Authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`;
     const req = https.request(
       { hostname: "api.github.com", path: "/graphql", method: "POST", headers },
       (res) => {
         let data = "";
         res.on("data", (c) => (data += c));
         res.on("end", () => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`GraphQL HTTP ${res.statusCode}`));
-          } else {
-            resolve(JSON.parse(data));
-          }
+          if (res.statusCode !== 200) reject(new Error(`GraphQL HTTP ${res.statusCode}`));
+          else resolve(JSON.parse(data));
         });
       }
     );
@@ -113,6 +102,14 @@ function githubGraphQL(query) {
 function getMajor(tag) {
   const m = tag.replace(/^v/, "").match(/^(\d+)/);
   return m ? parseInt(m[1], 10) : null;
+}
+
+function daysFromNow(dateStr) {
+  return Math.ceil((new Date(dateStr) - Date.now()) / 86400000);
+}
+
+function daysAgo(dateStr) {
+  return Math.floor((Date.now() - new Date(dateStr)) / 86400000);
 }
 
 function loadState() {
@@ -131,12 +128,8 @@ async function sendSlackAlert(message) {
   const parsed = new URL(url);
   return new Promise((resolve) => {
     const req = https.request(
-      {
-        hostname: parsed.hostname,
-        path: parsed.pathname,
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Content-Length": body.length },
-      },
+      { hostname: parsed.hostname, path: parsed.pathname, method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": body.length } },
       (res) => { res.on("data", () => {}); res.on("end", resolve); }
     );
     req.on("error", (e) => console.error("Slack error:", e.message));
@@ -145,44 +138,65 @@ async function sendSlackAlert(message) {
   });
 }
 
-// ─── CVE / Security Advisory Check ───────────────────────────────────────────
+// ─── EOL Check ────────────────────────────────────────────────────────────────
+
+function checkEolDates(pkg) {
+  const alerts = [];
+  for (const eol of pkg.eolDates || []) {
+    const days = daysFromNow(eol.date);
+    const eolFormatted = new Date(eol.date).toLocaleDateString("en-GB", { day:"numeric", month:"long", year:"numeric" });
+
+    if (days > EOL_WARN_DAYS_BEFORE) {
+      // Too far out — no alert yet
+      continue;
+    } else if (days > 0) {
+      // Upcoming — always alert regardless of state
+      alerts.push(
+        `*[EOL UPCOMING]* ${pkg.name} v${eol.version} reaches end-of-life in *${days} days* (${eolFormatted}).\n` +
+        `Action required: plan your upgrade before this date.\n` +
+        `Releases: https://github.com/${pkg.repo}/releases`
+      );
+    } else {
+      // Already past — alert once and mark as done
+      const stateKey = `${pkg.repo}:eol-passed:${eol.version}`;
+      alerts.push(
+        `*[EOL PASSED]* ${pkg.name} v${eol.version} reached end-of-life on ${eolFormatted}.\n` +
+        `No further security patches will be issued. Upgrade immediately.\n` +
+        `Releases: https://github.com/${pkg.repo}/releases`
+      );
+      // Return the stateKey so caller can mark it seen after one past-EOL alert
+      alerts._eolPassedKey = stateKey;
+    }
+  }
+  return alerts;
+}
+
+// ─── CVE Check ────────────────────────────────────────────────────────────────
 
 async function checkSecurityAdvisories(packageNames) {
   if (!process.env.GITHUB_TOKEN) {
-    console.log("  Skipping CVE check — GITHUB_TOKEN required for Advisory Database.");
+    console.log("  Skipping CVE check — GITHUB_TOKEN required.");
     return [];
   }
 
   const advisories = [];
-
   for (const pkg of packageNames) {
     console.log(`  Checking advisories for ${pkg}...`);
     try {
-      const result = await githubGraphQL(`
-        {
-          securityVulnerabilities(
-            ecosystem: NPM,
-            package: "${pkg}",
-            first: 5,
-            orderBy: { field: UPDATED_AT, direction: DESC }
-          ) {
-            nodes {
-              advisory {
-                ghsaId
-                summary
-                severity
-                publishedAt
-                updatedAt
-                permalink
-                cvss { score vectorString }
-                identifiers { type value }
-              }
-              vulnerableVersionRange
-              firstPatchedVersion { identifier }
+      const result = await githubGraphQL(`{
+        securityVulnerabilities(ecosystem:NPM, package:"${pkg}", first:10,
+          orderBy:{field:UPDATED_AT, direction:DESC}) {
+          nodes {
+            advisory {
+              ghsaId summary severity publishedAt updatedAt permalink
+              cvss { score }
+              identifiers { type value }
             }
+            vulnerableVersionRange
+            firstPatchedVersion { identifier }
           }
         }
-      `);
+      }`);
 
       const nodes = result?.data?.securityVulnerabilities?.nodes || [];
       for (const node of nodes) {
@@ -191,7 +205,6 @@ async function checkSecurityAdvisories(packageNames) {
         advisories.push({
           package: pkg,
           id: cveId,
-          ghsaId: adv.ghsaId,
           summary: adv.summary,
           severity: adv.severity,
           cvssScore: adv.cvss?.score || null,
@@ -206,12 +219,7 @@ async function checkSecurityAdvisories(packageNames) {
       console.error(`  Advisory check failed for ${pkg}: ${e.message}`);
     }
   }
-
   return advisories;
-}
-
-function severityLabel(severity) {
-  return { CRITICAL: "[CRITICAL]", HIGH: "[HIGH]", MODERATE: "[MODERATE]", LOW: "[LOW]" }[severity] || "[UNKNOWN]";
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -219,21 +227,17 @@ function severityLabel(severity) {
 async function run() {
   const state = loadState();
   const releaseAlerts = [];
+  const eolAlerts = [];
   const cveAlerts = [];
 
-  // ── 1. Check releases ──────────────────────────────────────────────────────
+  // ── 1. Release check ───────────────────────────────────────────────────────
   console.log("\n=== Release Check ===");
   for (const pkg of PACKAGES) {
-    console.log(`\nChecking ${pkg.name} (${pkg.repo})...`);
+    console.log(`\nChecking ${pkg.name}...`);
     let releases;
-    try {
-      releases = await githubGet(`/repos/${pkg.repo}/releases?per_page=10`);
-    } catch (e) {
-      console.error(`  Failed: ${e.message}`);
-      continue;
-    }
-
-    if (!releases.length) { console.log("  No releases found."); continue; }
+    try { releases = await githubGet(`/repos/${pkg.repo}/releases?per_page=10`); }
+    catch (e) { console.error(`  Failed: ${e.message}`); continue; }
+    if (!releases.length) continue;
 
     const latest = releases[0];
     const latestTag = latest.tag_name;
@@ -244,13 +248,9 @@ async function run() {
     console.log(`  Latest: ${latestTag} | Previous: ${prevTag || "none"}`);
 
     if (prevTag && prevTag !== latestTag) {
-      const isMajorBump =
-        pkg.watchMajorBump && prevMajor !== null && latestMajor !== null && latestMajor > prevMajor;
-
+      const isMajorBump = pkg.watchMajorBump && prevMajor !== null && latestMajor !== null && latestMajor > prevMajor;
       const label = isMajorBump ? "*[MAJOR VERSION BUMP]*" : "*[NEW RELEASE]*";
-      const extra = isMajorBump
-        ? `\nv${prevMajor} -> v${latestMajor} — review breaking changes before upgrading.`
-        : "";
+      const extra = isMajorBump ? `\nv${prevMajor} -> v${latestMajor} — review breaking changes.` : "";
       releaseAlerts.push(
         `${label} ${pkg.name} — \`${latestTag}\`${extra}\n` +
         `Published: ${new Date(latest.published_at).toDateString()}\n` +
@@ -258,63 +258,83 @@ async function run() {
       );
     }
 
-    for (const eolMajor of pkg.knownEolVersions || []) {
-      const stateKey = `${pkg.repo}:eol:${eolMajor}`;
-      if (!state[stateKey]) {
-        releaseAlerts.push(
-          `*[EOL WARNING]* ${pkg.name} v${eolMajor} is end-of-life.\n` +
-          `Upgrade to v${latestMajor}+ is required.\n` +
-          `Releases: https://github.com/${pkg.repo}/releases`
-        );
-        state[stateKey] = true;
-      }
-    }
-
     state[pkg.repo] = latestTag;
   }
 
-  // ── 2. Check CVEs / Security Advisories ───────────────────────────────────
+  // ── 2. EOL date check ─────────────────────────────────────────────────────
+  console.log("\n=== EOL Date Check ===");
+  for (const pkg of PACKAGES) {
+    const alerts = checkEolDates(pkg);
+    for (const alert of alerts) {
+      if (typeof alert === "string") {
+        eolAlerts.push(alert);
+        console.log(`  EOL alert: ${pkg.name}`);
+      }
+    }
+  }
+
+  // ── 3. CVE check — rolling window ─────────────────────────────────────────
   console.log("\n=== Security Advisory Check ===");
   const advisories = await checkSecurityAdvisories(NPM_PACKAGES_TO_AUDIT);
 
-  for (const adv of advisories) {
+  // Deduplicate by ID
+  const unique = [...new Map(advisories.map((a) => [a.id, a])).values()];
+
+  for (const adv of unique) {
+    const age = daysAgo(adv.publishedAt);
+    const isRecent = age <= CVE_ROLLING_WINDOW_DAYS;
     const stateKey = `cve:${adv.id}`;
-    if (!state[stateKey]) {
+    const alreadySeen = !!state[stateKey];
+
+    if (isRecent) {
+      // Always surface CVEs within the rolling window — even if seen before
       const cvss = adv.cvssScore ? ` | CVSS: ${adv.cvssScore.toFixed(1)}` : "";
+      const freshLabel = !alreadySeen ? " *(new)*" : ` *(${age}d ago)*`;
       cveAlerts.push(
-        `*${severityLabel(adv.severity)} CVE* \`${adv.id}\` — ${adv.package}\n` +
-        `${adv.summary}${cvss}\n` +
-        `Affected: \`${adv.vulnerableVersionRange}\` | Patched in: \`${adv.patchedVersion}\`\n` +
+        `*[${adv.severity} CVE]${freshLabel}* \`${adv.id}\` — ${adv.package}${cvss}\n` +
+        `${adv.summary}\n` +
+        `Affected: \`${adv.vulnerableVersionRange}\` | Patched: \`${adv.patchedVersion}\`\n` +
         `Details: ${adv.url}`
       );
-      state[stateKey] = new Date().toISOString();
-      console.log(`  New advisory: ${adv.id} (${adv.severity}) — ${adv.package}`);
+      if (!alreadySeen) {
+        state[stateKey] = new Date().toISOString();
+        console.log(`  New advisory: ${adv.id} (${adv.severity}) — ${adv.package}`);
+      } else {
+        console.log(`  Recent (${age}d ago, re-surfacing): ${adv.id}`);
+      }
     } else {
-      console.log(`  Already seen: ${adv.id}`);
+      // Older than rolling window — alert once if never seen, then drop
+      if (!alreadySeen) {
+        const cvss = adv.cvssScore ? ` | CVSS: ${adv.cvssScore.toFixed(1)}` : "";
+        cveAlerts.push(
+          `*[${adv.severity} CVE]* \`${adv.id}\` — ${adv.package}${cvss}\n` +
+          `${adv.summary}\n` +
+          `Affected: \`${adv.vulnerableVersionRange}\` | Patched: \`${adv.patchedVersion}\`\n` +
+          `Details: ${adv.url}`
+        );
+        state[stateKey] = new Date().toISOString();
+        console.log(`  Older unseen advisory: ${adv.id}`);
+      } else {
+        console.log(`  Old + already seen, skipping: ${adv.id}`);
+      }
     }
   }
 
   saveState(state);
 
-  // ── 3. Send alerts ─────────────────────────────────────────────────────────
-  const totalAlerts = releaseAlerts.length + cveAlerts.length;
+  // ── 4. Send alerts ─────────────────────────────────────────────────────────
+  const totalAlerts = releaseAlerts.length + eolAlerts.length + cveAlerts.length;
 
   if (totalAlerts === 0) {
-    console.log("\nNo new alerts. Stack is up to date and no new CVEs found.");
+    console.log("\nAll clear. No new releases, no upcoming EOLs, no recent CVEs.");
     return;
   }
 
-  console.log(`\n${totalAlerts} alert(s) found.`);
-
   const timestamp = new Date().toUTCString();
   const sections = [];
-
-  if (releaseAlerts.length) {
-    sections.push(`*Releases & EOL*\n${"-".repeat(30)}\n` + releaseAlerts.join("\n\n"));
-  }
-  if (cveAlerts.length) {
-    sections.push(`*Security Advisories (CVEs)*\n${"-".repeat(30)}\n` + cveAlerts.join("\n\n"));
-  }
+  if (releaseAlerts.length) sections.push(`*New Releases*\n${"-".repeat(30)}\n` + releaseAlerts.join("\n\n"));
+  if (eolAlerts.length)     sections.push(`*EOL Warnings*\n${"-".repeat(30)}\n` + eolAlerts.join("\n\n"));
+  if (cveAlerts.length)     sections.push(`*Security Advisories (CVEs)*\n${"-".repeat(30)}\n` + cveAlerts.join("\n\n"));
 
   const fullMessage =
     `*Dependency Monitor — ${timestamp}*\n${"=".repeat(40)}\n\n` +
@@ -323,18 +343,13 @@ async function run() {
 
   console.log("\n" + fullMessage);
 
-  // Exit with code 1 so GitHub emails you via its built-in failure notification
+  // Exit code 1 triggers GitHub's built-in email notification
   process.exitCode = 1;
 
   if (process.env.SLACK_WEBHOOK_URL) {
     await sendSlackAlert(fullMessage);
     console.log("\nSlack notification sent.");
-  } else {
-    console.log("\nTip: Add SLACK_WEBHOOK_URL as a repo secret to receive Slack notifications.");
   }
 }
 
-run().catch((e) => {
-  console.error("Monitor failed:", e);
-  process.exit(1);
-});
+run().catch((e) => { console.error("Monitor failed:", e); process.exit(1); });
