@@ -23,5 +23,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}   # Optional
-          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}             # Optional
         run: node scripts/check-deps.js
+
+      # Sends email via GitHub's built-in notification when alerts are found.
+      # Go to GitHub → Settings → Notifications → Actions → enable "Failed workflows only"
+      - name: Alert summary (triggers GitHub email)
+        if: failure()
+        run: |
+          echo "Dependency alerts were found. Check the Run dependency monitor step above for details."
+          echo "Packages monitored: Sitecore JSS, Next.js, Sitecore XM Cloud"

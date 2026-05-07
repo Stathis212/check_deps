@@ -323,6 +323,9 @@ async function run() {
 
   console.log("\n" + fullMessage);
 
+  // Exit with code 1 so GitHub emails you via its built-in failure notification
+  process.exitCode = 1;
+
   if (process.env.SLACK_WEBHOOK_URL) {
     await sendSlackAlert(fullMessage);
     console.log("\nSlack notification sent.");
