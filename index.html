@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stack Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f9f9f8;
+      --surface: #ffffff;
+      --border: rgba(0,0,0,0.1);
+      --border-hover: rgba(0,0,0,0.2);
+      --text: #1a1a18;
+      --text-muted: #6b6b68;
+      --text-hint: #9b9b98;
+      --success-bg: #eaf3de; --success-text: #3b6d11;
+      --warning-bg: #faeeda; --warning-text: #854f0b;
+      --danger-bg:  #fcebeb; --danger-text:  #a32d2d;
+      --info-bg:    #e6f1fb; --info-text:    #185fa5;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1a18;
+        --surface: #242422;
+        --border: rgba(255,255,255,0.1);
+        --border-hover: rgba(255,255,255,0.2);
+        --text: #f0efe8;
+        --text-muted: #9b9b98;
+        --text-hint: #6b6b68;
+        --success-bg: #173404; --success-text: #c0dd97;
+        --warning-bg: #412402; --warning-text: #fac775;
+        --danger-bg:  #501313; --danger-text:  #f09595;
+        --info-bg:    #042c53; --info-text:    #85b7eb;
+      }
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    header {
+      border-bottom: 0.5px solid var(--border);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface);
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .header-left svg { width: 20px; height: 20px; color: var(--text-muted); }
+    h1 { font-size: 15px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    #last-checked { font-size: 12px; color: var(--text-hint); }
+
+    button {
+      font-size: 13px;
+      padding: 5px 14px;
+      border-radius: 20px;
+      border: 0.5px solid var(--border-hover);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 0.15s;
+    }
+    button:hover { background: var(--border); }
+
+    main { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    .tab-bar { display: flex; gap: 6px; margin-bottom: 1.5rem; flex-wrap: wrap; }
+    .tab {
+      font-size: 13px; padding: 5px 16px; border-radius: 20px;
+      border: 0.5px solid var(--border-hover);
+      background: transparent; color: var(--text-muted); cursor: pointer;
+    }
+    .tab.active { background: var(--surface); color: var(--text); font-weight: 500; border-color: var(--border-hover); }
+
+    .card {
+      background: var(--surface);
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1rem 1.25rem;
+      margin-bottom: 10px;
+    }
+
+    .pkg-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .pkg-name { font-size: 15px; font-weight: 500; }
+    .pkg-repo { font-size: 12px; color: var(--text-hint); margin-top: 1px; }
+
+    .rel-row {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 13px; padding: 6px 10px;
+      border-radius: var(--radius-md);
+      background: var(--bg);
+      margin-bottom: 5px;
+    }
+    .rel-tag { font-weight: 500; }
+    .rel-meta { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+
+    .badge {
+      font-size: 11px; font-weight: 500;
+      padding: 2px 8px; border-radius: 20px; white-space: nowrap;
+    }
+    .b-latest  { background: var(--success-bg); color: var(--success-text); }
+    .b-eol     { background: var(--danger-bg);  color: var(--danger-text); }
+    .b-prev    { background: var(--bg); color: var(--text-muted); border: 0.5px solid var(--border); }
+    .b-critical{ background: var(--danger-bg);  color: var(--danger-text); }
+    .b-high    { background: var(--warning-bg); color: var(--warning-text); }
+    .b-moderate{ background: var(--info-bg);    color: var(--info-text); }
+    .b-low     { background: var(--bg); color: var(--text-muted); border: 0.5px solid var(--border); }
+
+    .links-row { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+    .links-row a { font-size: 12px; color: var(--info-text); text-decoration: none; }
+    .links-row a:hover { text-decoration: underline; }
+
+    .sec-row {
+      font-size: 13px; padding: 10px 12px;
+      border-radius: var(--radius-md);
+      background: var(--bg);
+      margin-bottom: 6px;
+    }
+    .sec-title { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+    .sec-id { color: var(--text-muted); font-size: 12px; }
+    .sec-pkg { color: var(--text-hint); font-size: 12px; }
+    .sec-summary { color: var(--text); margin-bottom: 5px; }
+    .sec-meta { font-size: 12px; color: var(--text-muted); }
+    .sec-meta code { font-size: 11px; background: var(--border); padding: 1px 5px; border-radius: 4px; }
+    .sec-link { font-size: 12px; color: var(--info-text); text-decoration: none; margin-top: 5px; display: inline-block; }
+
+    .section-label {
+      font-size: 11px; font-weight: 500; text-transform: uppercase;
+      letter-spacing: 0.07em; color: var(--text-hint);
+      margin: 14px 0 6px;
+    }
+
+    .muted { color: var(--text-muted); font-size: 13px; padding: 6px 0; }
+
+    .cve-badge-wrap { display: inline-flex; margin-left: 4px; }
+
+    footer {
+      text-align: center; font-size: 12px; color: var(--text-hint);
+      padding: 2rem 1.5rem;
+      border-top: 0.5px solid var(--border);
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+    <h1>Stack Monitor</h1>
+  </div>
+  <div class="header-right">
+    <span id="last-checked"></span>
+    <button onclick="loadAll()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      Refresh
+    </button>
+  </div>
+</header>
+
+<main>
+  <div class="tab-bar">
+    <button class="tab active" onclick="showTab('releases', this)">Releases</button>
+    <button class="tab" onclick="showTab('cve', this)">Security advisories <span id="cve-count" class="cve-badge-wrap"></span></button>
+  </div>
+
+  <div id="tab-releases"></div>
+  <div id="tab-cve" style="display:none;"></div>
+</main>
+
+<footer>
+  Data from GitHub Releases API &amp; GitHub Advisory Database &nbsp;·&nbsp; Rate limit: 60 req/hr unauthenticated
+</footer>
+
+<script>
+const PACKAGES = [
+  { name:"Sitecore JSS",           repo:"Sitecore/jss",                   eolVersions:[],   releases:"https://github.com/Sitecore/jss/releases",                   docs:"https://doc.sitecore.com/xp/en/developers/hd/latest/sitecore-headless-development/sitecore-javascript-rendering-sdks--jss-.html" },
+  { name:"Next.js",                repo:"vercel/next.js",                  eolVersions:["14"], releases:"https://github.com/vercel/next.js/releases",               docs:"https://nextjs.org/docs" },
+  { name:"Sitecore XM Cloud",      repo:"Sitecore/xm-cloud-introduction", eolVersions:[],   releases:"https://github.com/Sitecore/xm-cloud-introduction/releases", docs:"https://doc.sitecore.com/xmc" },
+];
+
+const NPM_AUDIT_PKGS = ["next","@sitecore-jss/sitecore-jss","@sitecore-jss/sitecore-jss-nextjs","react"];
+
+function timeAgo(d) {
+  const s = Math.floor((Date.now() - new Date(d)) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  if (s < 86400) return Math.floor(s/3600) + "h ago";
+  if (s < 30*86400) return Math.floor(s/86400) + "d ago";
+  return new Date(d).toLocaleDateString("en-GB", { month:"short", year:"numeric" });
+}
+
+function getMajor(t) { const m = t.replace(/^v/,"").match(/^(\d+)/); return m ? m[1] : null; }
+function severityClass(s) { return { CRITICAL:"b-critical", HIGH:"b-high", MODERATE:"b-moderate", LOW:"b-low" }[s] || "b-low"; }
+
+function showTab(name, btn) {
+  document.getElementById("tab-releases").style.display = name === "releases" ? "block" : "none";
+  document.getElementById("tab-cve").style.display      = name === "cve"      ? "block" : "none";
+  document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+}
+
+async function fetchReleases(repo) {
+  const r = await fetch("https://api.github.com/repos/" + repo + "/releases?per_page=8");
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+async function fetchAdvisories(pkg) {
+  const query = JSON.stringify({ query: `{ securityVulnerabilities(ecosystem:NPM,package:"${pkg}",first:5,orderBy:{field:UPDATED_AT,direction:DESC}){ nodes{ advisory{ ghsaId summary severity publishedAt permalink cvss{score} identifiers{type value} } vulnerableVersionRange firstPatchedVersion{identifier} } } }` });
+  const r = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "dep-monitor/1.0" },
+    body: query
+  });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const d = await r.json();
+  return (d?.data?.securityVulnerabilities?.nodes || []).map(n => ({
+    package: pkg,
+    id: n.advisory.identifiers.find(i => i.type === "CVE")?.value || n.advisory.ghsaId,
+    summary: n.advisory.summary,
+    severity: n.advisory.severity,
+    cvss: n.advisory.cvss?.score || null,
+    affected: n.vulnerableVersionRange,
+    patched: n.firstPatchedVersion?.identifier || "No patch yet",
+    published: n.advisory.publishedAt,
+    url: n.advisory.permalink
+  }));
+}
+
+function renderReleases(pkg, releases) {
+  const seen = new Set(); const rows = [];
+  for (const r of releases) {
+    const maj = getMajor(r.tag_name);
+    if (seen.has(maj)) continue; seen.add(maj);
+    const isEol    = pkg.eolVersions.includes(maj);
+    const isLatest = rows.length === 0;
+    const badge    = isEol ? '<span class="badge b-eol">EOL</span>' : isLatest ? '<span class="badge b-latest">Latest</span>' : '<span class="badge b-prev">v' + maj + '</span>';
+    const rowBg    = isEol ? 'background:var(--danger-bg);' : '';
+    rows.push(`<div class="rel-row" style="${rowBg}">
+      <span class="rel-tag">${r.tag_name}</span>
+      <div class="rel-meta"><span>${timeAgo(r.published_at)}</span>${badge}</div>
+    </div>`);
+    if (rows.length >= 3) break;
+  }
+  return `<div class="card">
+    <div class="pkg-header">
+      <div><div class="pkg-name">${pkg.name}</div><div class="pkg-repo">${pkg.repo}</div></div>
+    </div>
+    ${rows.join("")}
+    <div class="links-row">
+      <a href="${pkg.releases}" target="_blank">↗ Releases</a>
+      <a href="${pkg.docs}" target="_blank">↗ Docs</a>
+    </div>
+  </div>`;
+}
+
+function renderError(pkg) {
+  return `<div class="card">
+    <div class="pkg-name">${pkg.name}</div>
+    <div class="muted" style="margin-top:6px;">Could not load — GitHub rate limit may apply. <a href="${pkg.releases}" target="_blank" style="color:var(--info-text);">View on GitHub ↗</a></div>
+  </div>`;
+}
+
+function renderAdvisories(all) {
+  if (!all.length) return `<div class="card"><div class="muted">No advisories found for monitored packages.</div></div>`;
+  const groups = { CRITICAL:[], HIGH:[], MODERATE:[], LOW:[] };
+  for (const a of all) (groups[a.severity] || groups.LOW).push(a);
+  let html = "";
+  for (const [sev, items] of Object.entries(groups)) {
+    if (!items.length) continue;
+    html += `<div class="section-label">${sev.charAt(0)+sev.slice(1).toLowerCase()} (${items.length})</div>`;
+    for (const a of items) {
+      const cvss = a.cvss ? ` &nbsp;·&nbsp; CVSS ${a.cvss.toFixed(1)}` : "";
+      html += `<div class="sec-row">
+        <div class="sec-title">
+          <span class="badge ${severityClass(a.severity)}">${a.severity}</span>
+          <span class="sec-id">${a.id}</span>
+          <span class="sec-pkg">${a.package}${cvss}</span>
+        </div>
+        <div class="sec-summary">${a.summary}</div>
+        <div class="sec-meta">Affected: <code>${a.affected}</code> &nbsp;·&nbsp; Patched: <code>${a.patched}</code> &nbsp;·&nbsp; ${timeAgo(a.published)}</div>
+        <a class="sec-link" href="${a.url}" target="_blank">View advisory ↗</a>
+      </div>`;
+    }
+  }
+  return html;
+}
+
+async function loadAll() {
+  const relEl = document.getElementById("tab-releases");
+  const cveEl = document.getElementById("tab-cve");
+  relEl.innerHTML = PACKAGES.map(p => `<div class="card"><div class="pkg-name">${p.name}</div><div class="muted" style="margin-top:6px;">Loading...</div></div>`).join("");
+  cveEl.innerHTML = `<div class="card"><div class="muted">Querying advisory database...</div></div>`;
+
+  for (let i = 0; i < PACKAGES.length; i++) {
+    const cards = relEl.querySelectorAll(".card");
+    try {
+      const rel = await fetchReleases(PACKAGES[i].repo);
+      cards[i].outerHTML = renderReleases(PACKAGES[i], rel);
+    } catch {
+      cards[i].outerHTML = renderError(PACKAGES[i]);
+    }
+  }
+
+  const allAdvisories = [];
+  for (const pkg of NPM_AUDIT_PKGS) {
+    try { allAdvisories.push(...await fetchAdvisories(pkg)); } catch {}
+  }
+  const unique = [...new Map(allAdvisories.map(a => [a.id, a])).values()];
+  unique.sort((a,b) => ({ CRITICAL:0, HIGH:1, MODERATE:2, LOW:3 }[a.severity]||3) - ({ CRITICAL:0, HIGH:1, MODERATE:2, LOW:3 }[b.severity]||3));
+
+  cveEl.innerHTML = renderAdvisories(unique);
+
+  const countEl = document.getElementById("cve-count");
+  if (unique.length) countEl.innerHTML = `<span class="badge ${severityClass(unique[0].severity)}" style="font-size:10px;">${unique.length}</span>`;
+
+  document.getElementById("last-checked").textContent = "Updated " + new Date().toLocaleTimeString();
+}
+
+loadAll();
+</script>
+</body>
+</html>
