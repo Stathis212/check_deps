@@ -285,7 +285,9 @@ function renderAdvisories(all) {
 async function loadAll() {
   const relEl = document.getElementById("tab-releases");
   const cveEl = document.getElementById("tab-cve");
-  relEl.innerHTML = PACKAGES.map(p=>`<div class="card"><div class="pkg-name">${p.name}</div><div class="muted" style="margin-top:6px;">Loading...</div></div>`).join("");
+
+  // Render placeholder cards with stable IDs so we can update them individually
+  relEl.innerHTML = PACKAGES.map((p,i)=>`<div class="card" id="pkg-card-${i}"><div class="pkg-name">${p.name}</div><div class="muted" style="margin-top:6px;">Loading...</div></div>`).join("");
   cveEl.innerHTML = `<div class="card"><div class="muted">Querying advisory database...</div></div>`;
 
   // Fetch Sitecore lifecycle and Next.js EOL data in parallel
@@ -296,38 +298,52 @@ async function loadAll() {
 
   // Map endoflife.date cycles onto EOL_API_PACKAGES
   EOL_API_PACKAGES.forEach((pkg, i) => {
-    pkg.eolDates = (eolCycles[i] || [])
+    const cycles = eolCycles[i] || [];
+    const arr = Array.isArray(cycles) ? cycles : Object.values(cycles);
+    pkg.eolDates = arr
       .filter(c => c.eol && c.eol !== false && c.eol !== true)
       .map(c => ({ version: String(c.cycle), eolDate: c.eol }));
   });
 
   // Map scraped Sitecore lifecycle onto SITECORE_PACKAGES
   SITECORE_PACKAGES.forEach(pkg => {
-    pkg.eolDates = sitecoreLifecycle
+    pkg.eolDates = (sitecoreLifecycle || [])
       .filter(e => e.product && e.product.toLowerCase().includes(pkg.sitecoreProduct))
       .filter(e => e.eolDate);
   });
 
+  // Load each package card individually using stable IDs — avoids stale NodeList bug
   for(let i=0;i<PACKAGES.length;i++){
+    const card = document.getElementById(`pkg-card-${i}`);
+    if(!card) continue;
     try{
       const rel = await fetchReleases(PACKAGES[i].repo);
-      relEl.querySelectorAll(".card")[i].outerHTML = renderReleases(PACKAGES[i], rel);
+      // Filter out pre-releases in the browser too
+      const stable = rel.filter(r => !r.prerelease && !/canary|alpha|beta|rc\./i.test(r.tag_name));
+      card.outerHTML = renderReleases(PACKAGES[i], stable);
     } catch(e) {
-      relEl.querySelectorAll(".card")[i].innerHTML = `<div class="pkg-name">${PACKAGES[i].name}</div><div class="muted" style="margin-top:6px;color:var(--danger-text);">Could not load — ${e.message}. <a href="${PACKAGES[i].releases}" target="_blank" style="color:var(--info-text);">View on GitHub ↗</a></div>`;
+      card.outerHTML = `<div class="card" id="pkg-card-${i}"><div class="pkg-name">${PACKAGES[i].name}</div><div class="muted" style="margin-top:6px;color:var(--danger-text);">Could not load — ${e.message}. <a href="${PACKAGES[i].releases}" target="_blank" style="color:var(--info-text);">View on GitHub ↗</a></div></div>`;
     }
   }
 
+  // CVEs — GraphQL requires auth in the browser; fall back gracefully if blocked
   const all = [];
   for(const pkg of NPM_AUDIT_PKGS){
     try{ all.push(...await fetchAdvisories(pkg)); } catch{}
   }
   const unique = [...new Map(all.map(a=>[a.id,a])).values()];
-  const recentCount = unique.filter(a=>daysAgo(a.published)<=CVE_WINDOW_DAYS).length;
 
-  cveEl.innerHTML = renderAdvisories(unique);
-
-  const btn = document.getElementById("tab-cve-btn");
-  btn.innerHTML = `Security advisories${recentCount>0?` <span class="badge b-${unique.sort((a,b)=>({CRITICAL:0,HIGH:1,MODERATE:2,LOW:3}[a.severity]||3)-({CRITICAL:0,HIGH:1,MODERATE:2,LOW:3}[b.severity]||3))[0]?.severity.toLowerCase()}" style="font-size:10px;">${recentCount}</span>`:""}`;
+  if(unique.length === 0){
+    cveEl.innerHTML = `<div class="card"><div class="muted">No advisories returned — GitHub GraphQL requires authentication in the browser. CVE alerts are still delivered via email and Slack through GitHub Actions.</div></div>`;
+  } else {
+    const recentCount = unique.filter(a=>daysAgo(a.published)<=CVE_WINDOW_DAYS).length;
+    cveEl.innerHTML = renderAdvisories(unique);
+    const btn = document.getElementById("tab-cve-btn");
+    if(recentCount>0){
+      const topSev = [...unique].sort((a,b)=>({CRITICAL:0,HIGH:1,MODERATE:2,LOW:3}[a.severity]||3)-({CRITICAL:0,HIGH:1,MODERATE:2,LOW:3}[b.severity]||3))[0]?.severity.toLowerCase();
+      btn.innerHTML = `Security advisories <span class="badge b-${topSev}" style="font-size:10px;">${recentCount}</span>`;
+    }
+  }
 
   document.getElementById("last-checked").textContent = "Updated "+new Date().toLocaleTimeString();
 }
