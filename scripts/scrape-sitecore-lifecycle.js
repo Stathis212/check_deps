@@ -23,6 +23,8 @@ const PRODUCTS_OF_INTEREST = [
   "javascript services",
   "content sdk",
   "xm cloud",
+  "xmcloud",
+  "experience manager cloud",
 ];
 
 async function scrape() {

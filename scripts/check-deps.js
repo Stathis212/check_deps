@@ -35,7 +35,7 @@ const PACKAGES = [
     name: "Sitecore XM Cloud",
     repo: "Sitecore/xm-cloud-introduction",
     watchMajorBump: true,
-    sitecoreProduct: "xm cloud",
+    sitecoreProduct: "xm", // matches "xm cloud", "xmcloud", "experience manager cloud"
     releases: "https://github.com/Sitecore/xm-cloud-introduction/releases",
     docs: "https://doc.sitecore.com/xmc",
   },
@@ -119,7 +119,9 @@ function githubGraphQL(query) {
 async function fetchEolDateCycles(slug) {
   try {
     const data = await httpGet("endoflife.date", `/api/v1/products/${slug}/`);
-    return data || [];
+    // API can return an array of cycles or an object — always normalise to array
+    if (!data) return [];
+    return Array.isArray(data) ? data : Object.values(data);
   } catch (e) {
     console.error(`  endoflife.date fetch failed for ${slug}: ${e.message}`);
     return [];
@@ -281,13 +283,18 @@ async function run() {
     try { releases = await githubGet(`/repos/${pkg.repo}/releases?per_page=10`) || []; }
     catch (e) { console.error(`  Releases failed: ${e.message}`); }
 
-    if (releases.length) {
-      const latest = releases[0];
+    // Skip pre-releases (canary, alpha, beta, rc) — only track stable releases
+    const stableReleases = (releases || []).filter(r =>
+      !r.prerelease && !/canary|alpha|beta|rc\./i.test(r.tag_name)
+    );
+
+    if (stableReleases.length) {
+      const latest = stableReleases[0];
       const latestTag = latest.tag_name;
       const latestMajor = getMajor(latestTag);
       const prevTag = state[pkg.repo];
       const prevMajor = prevTag ? getMajor(prevTag) : null;
-      console.log(`  Latest: ${latestTag} | Previous: ${prevTag || "none"}`);
+      console.log(`  Latest stable: ${latestTag} | Previous: ${prevTag || "none"}`);
 
       if (prevTag && prevTag !== latestTag) {
         const isMajorBump = pkg.watchMajorBump && prevMajor !== null && latestMajor !== null && latestMajor > prevMajor;
@@ -326,13 +333,18 @@ async function run() {
     try { releases = await githubGet(`/repos/${pkg.repo}/releases?per_page=10`) || []; }
     catch (e) { console.error(`  Releases failed: ${e.message}`); }
 
-    if (releases.length) {
-      const latest = releases[0];
+    // Skip pre-releases (canary, alpha, beta, rc) — only track stable releases
+    const stableReleases = (releases || []).filter(r =>
+      !r.prerelease && !/canary|alpha|beta|rc\./i.test(r.tag_name)
+    );
+
+    if (stableReleases.length) {
+      const latest = stableReleases[0];
       const latestTag = latest.tag_name;
       const latestMajor = getMajor(latestTag);
       const prevTag = state[pkg.repo];
       const prevMajor = prevTag ? getMajor(prevTag) : null;
-      console.log(`  Latest: ${latestTag} | Previous: ${prevTag || "none"}`);
+      console.log(`  Latest stable: ${latestTag} | Previous: ${prevTag || "none"}`);
 
       if (prevTag && prevTag !== latestTag) {
         const isMajorBump = pkg.watchMajorBump && prevMajor !== null && latestMajor !== null && latestMajor > prevMajor;
