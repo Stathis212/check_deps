@@ -19,6 +19,15 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Install Playwright
+        run: |
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Scrape Sitecore lifecycle page
+        run: node scripts/scrape-sitecore-lifecycle.js
+        # Non-fatal — if scraping fails, check-deps.js falls back gracefully
+
       - name: Run dependency monitor
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -30,5 +39,5 @@ jobs:
       - name: Alert summary (triggers GitHub email)
         if: failure()
         run: |
-          echo "Dependency alerts were found. Check the Run dependency monitor step above for details."
-          echo "Packages monitored: Sitecore JSS, Next.js, Sitecore XM Cloud"
+          echo "Dependency alerts were found. Check the 'Run dependency monitor' step above for details."
+          echo "Packages monitored: Sitecore JSS, Sitecore Content SDK, Next.js, Sitecore XM Cloud"

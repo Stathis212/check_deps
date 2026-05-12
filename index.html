@@ -103,43 +103,36 @@
 <footer>Data: GitHub Releases API &amp; GitHub Advisory Database &nbsp;·&nbsp; CVEs shown: published within last 30 days + any unseen older advisories</footer>
 
 <script>
-const PACKAGES = [
+// Packages whose EOL is fetched live from endoflife.date API
+const EOL_API_PACKAGES = [
   {
-    name: "Sitecore JSS", repo: "Sitecore/jss",
-    eolDates: [
-      { version:"21", eolDate:"2026-06-30" },
-      { version:"22", eolDate:"2026-06-30" },
-    ],
-    upcomingReleases: [
-      { version:"23", note:"XM/XP only — does NOT support XM Cloud or SitecoreAI. Migrate to Content SDK instead." },
-    ],
+    name: "Next.js", repo: "vercel/next.js", slug: "nextjs",
+    releases: "https://github.com/vercel/next.js/releases",
+    docs: "https://nextjs.org/docs"
+  },
+];
+
+// Sitecore packages — EOL data fetched from .sitecore-lifecycle-cache.json
+// which is written by the scraper on every GitHub Actions run and committed
+const SITECORE_PACKAGES = [
+  {
+    name: "Sitecore JSS", repo: "Sitecore/jss", sitecoreProduct: "jss",
     releases: "https://github.com/Sitecore/jss/releases",
     docs: "https://doc.sitecore.com/xp/en/developers/hd/latest/sitecore-headless-development/sitecore-javascript-rendering-sdks--jss-.html"
   },
   {
-    name: "Sitecore Content SDK", repo: "Sitecore/content-sdk",
-    eolDates: [],
-    upcomingReleases: [],
-    note: "Recommended successor to JSS for XM Cloud / SitecoreAI. Currently in active support.",
+    name: "Sitecore Content SDK", repo: "Sitecore/content-sdk", sitecoreProduct: "content sdk",
     releases: "https://github.com/Sitecore/content-sdk/releases",
     docs: "https://developers.sitecore.com/content-sdk"
   },
   {
-    name: "Next.js", repo: "vercel/next.js",
-    eolDates: [{ version:"14", eolDate:"2024-10-21" }],
-    upcomingReleases: [],
-    releases: "https://github.com/vercel/next.js/releases",
-    docs: "https://nextjs.org/docs"
-  },
-  {
-    name: "Sitecore XM Cloud", repo: "Sitecore/xm-cloud-introduction",
-    eolDates: [],
-    upcomingReleases: [],
+    name: "Sitecore XM Cloud", repo: "Sitecore/xm-cloud-introduction", sitecoreProduct: "xm cloud",
     releases: "https://github.com/Sitecore/xm-cloud-introduction/releases",
     docs: "https://doc.sitecore.com/xmc"
   },
 ];
 
+const PACKAGES = [...SITECORE_PACKAGES, ...EOL_API_PACKAGES];
 const NPM_AUDIT_PKGS = ["next","@sitecore-jss/sitecore-jss","@sitecore-jss/sitecore-jss-nextjs","@sitecore-content-sdk/nextjs","react"];
 const CVE_WINDOW_DAYS = 30;
 
@@ -167,6 +160,24 @@ async function fetchReleases(repo) {
   const r = await fetch("https://api.github.com/repos/"+repo+"/releases?per_page=8");
   if(!r.ok) throw new Error("HTTP "+r.status);
   return r.json();
+}
+
+// Fetch Sitecore lifecycle from the scraped cache committed to the repo
+async function fetchSitecoreLifecycle() {
+  try {
+    const r = await fetch(".sitecore-lifecycle-cache.json");
+    if (!r.ok) return [];
+    return (await r.json()).products || [];
+  } catch { return []; }
+}
+
+// Fetch EOL cycles from endoflife.date API
+async function fetchEolCycles(slug) {
+  try {
+    const r = await fetch(`https://endoflife.date/api/v1/products/${slug}/`);
+    if (!r.ok) return [];
+    return await r.json();
+  } catch { return []; }
 }
 
 async function fetchAdvisories(pkg) {
@@ -276,6 +287,26 @@ async function loadAll() {
   const cveEl = document.getElementById("tab-cve");
   relEl.innerHTML = PACKAGES.map(p=>`<div class="card"><div class="pkg-name">${p.name}</div><div class="muted" style="margin-top:6px;">Loading...</div></div>`).join("");
   cveEl.innerHTML = `<div class="card"><div class="muted">Querying advisory database...</div></div>`;
+
+  // Fetch Sitecore lifecycle and Next.js EOL data in parallel
+  const [sitecoreLifecycle, ...eolCycles] = await Promise.all([
+    fetchSitecoreLifecycle(),
+    ...EOL_API_PACKAGES.map(p => fetchEolCycles(p.slug))
+  ]);
+
+  // Map endoflife.date cycles onto EOL_API_PACKAGES
+  EOL_API_PACKAGES.forEach((pkg, i) => {
+    pkg.eolDates = (eolCycles[i] || [])
+      .filter(c => c.eol && c.eol !== false && c.eol !== true)
+      .map(c => ({ version: String(c.cycle), eolDate: c.eol }));
+  });
+
+  // Map scraped Sitecore lifecycle onto SITECORE_PACKAGES
+  SITECORE_PACKAGES.forEach(pkg => {
+    pkg.eolDates = sitecoreLifecycle
+      .filter(e => e.product && e.product.toLowerCase().includes(pkg.sitecoreProduct))
+      .filter(e => e.eolDate);
+  });
 
   for(let i=0;i<PACKAGES.length;i++){
     try{
