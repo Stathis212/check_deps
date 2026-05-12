@@ -144,7 +144,7 @@ function timeAgo(d) {
   if(s<30*86400) return Math.floor(s/86400)+"d ago";
   return new Date(d).toLocaleDateString("en-GB",{month:"short",year:"numeric"});
 }
-function daysFromNow(d) { return Math.ceil((new Date(d)-Date.now())/86400000); }
+function daysFromNow(d) { if(!d) return Infinity; return Math.ceil((new Date(d)-Date.now())/86400000); }
 function daysAgo(d) { return Math.floor((Date.now()-new Date(d))/86400000); }
 function getMajor(t) { const m=t.replace(/^v/,"").match(/^(\d+)/); return m?m[1]:null; }
 function sevClass(s) { return {CRITICAL:"b-critical",HIGH:"b-high",MODERATE:"b-moderate",LOW:"b-low"}[s]||"b-low"; }
@@ -176,7 +176,12 @@ async function fetchEolCycles(slug) {
   try {
     const r = await fetch(`https://endoflife.date/api/v1/products/${slug}/`);
     if (!r.ok) return [];
-    return await r.json();
+    const data = await r.json();
+    // API v1 returns { result: { releases: [...] } }
+    if (data?.result?.releases) return data.result.releases;
+    // Fallback: flat array (older API format)
+    if (Array.isArray(data)) return data;
+    return [];
   } catch { return []; }
 }
 
@@ -195,57 +200,93 @@ async function fetchAdvisories(pkg) {
   }));
 }
 
-function renderEolBanners(pkg) {
-  const fmt = (d) => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"});
-  const banners = [];
+function statusBadge(isEol, isMaintained, isLts) {
+  if(isEol) return '<span class="badge b-eol">EOL</span>';
+  if(!isMaintained) return '<span class="badge b-eol">Unmaintained</span>';
+  if(isLts) return '<span class="badge b-latest">LTS</span>';
+  return '<span class="badge b-latest">Active</span>';
+}
 
-  // Note banner (e.g. Content SDK active support note)
-  if (pkg.note) {
-    banners.push(`<div class="eol-banner" style="background:var(--info-bg);color:var(--info-text);"><strong>Note</strong> — ${pkg.note}</div>`);
+function eolChip(eolDate, isEol) {
+  if(!eolDate) return '<span style="font-size:11px;color:var(--text-hint);">No EOL date</span>';
+  const fmt = new Date(eolDate).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+  if(isEol) return `<span style="color:var(--danger-text);font-size:11px;">EOL ${fmt}</span>`;
+  const days = daysFromNow(eolDate);
+  const color = days<=30 ? "var(--danger-text)" : days<=90 ? "var(--warning-text)" : "var(--text-muted)";
+  return `<span style="color:${color};font-size:11px;">EOL ${fmt} (${days}d)</span>`;
+}
+
+function renderPackageCard(pkg, releases, idx) {
+  const fmt = d => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+  let rows = '';
+
+  if(pkg.eolCycles && pkg.eolCycles.length) {
+    // endoflife.date: show per-version lifecycle status as primary info
+    rows = pkg.eolCycles.slice(0,6).map(c => {
+      const bg = c.isEol ? 'background:var(--danger-bg);' : '';
+      return `<div class="rel-row" style="${bg}">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-weight:500;">${c.label||'v'+c.version}</span>
+          ${statusBadge(c.isEol, c.isMaintained, c.isLts)}
+          ${c.latestVersion ? `<span style="font-size:12px;color:var(--text-hint);">latest: ${c.latestVersion}</span>` : ''}
+        </div>
+        <div style="text-align:right;">
+          ${eolChip(c.eolDate, c.isEol)}
+        </div>
+      </div>`;
+    }).join('');
+  } else {
+    // Sitecore: show releases with EOL dates from scraper
+    const stable = releases.filter(r => !r.prerelease && !/canary|alpha|beta|rc\./i.test(r.tag_name));
+    const seen=new Set(); const releaseRows=[];
+    for(const r of stable){
+      const maj=getMajor(r.tag_name);
+      if(seen.has(maj)) continue; seen.add(maj);
+      const eolEntry=(pkg.eolDates||[]).find(e=>String(e.version)===String(maj));
+      const eolDate=eolEntry?.eolDate||null;
+      const isEol=eolDate && daysFromNow(eolDate)<=0;
+      const isLatest=releaseRows.length===0;
+      const bg=isEol?'background:var(--danger-bg);':'';
+      releaseRows.push(`<div class="rel-row" style="${bg}">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-weight:500;">${r.tag_name}</span>
+          ${isLatest ? statusBadge(isEol, true, false) : `<span class="badge b-prev">v${maj}</span>`}
+          <span style="font-size:11px;color:var(--text-hint);">${timeAgo(r.published_at)}</span>
+        </div>
+        <div style="text-align:right;">${eolChip(eolDate, isEol)}</div>
+      </div>`);
+      if(releaseRows.length>=4) break;
+    }
+    rows = releaseRows.join('') || '<div class="muted">No stable releases found.</div>';
   }
 
-  // EOL banners
-  for (const eol of (pkg.eolDates||[])) {
-    const eolDateStr = eol.eolDate || eol.date;
-    if (!eolDateStr) continue;
-    const daysToEol = daysFromNow(eolDateStr);
-    if (daysToEol > 90) continue;
-    if (daysToEol > 0) {
-      const urgency = daysToEol <= 30 ? "color:var(--danger-text);" : "";
-      banners.push(`<div class="eol-banner upcoming"><strong>EOL in ${daysToEol} days</strong> — v${eol.version} reaches end-of-life on ${fmt(eolDateStr)}. <span style="${urgency}">No security patches after this date.</span></div>`);
-    } else {
-      banners.push(`<div class="eol-banner passed"><strong>EOL passed</strong> — v${eol.version} reached end-of-life on ${fmt(eolDateStr)}. Upgrade immediately.</div>`);
+  // Upcoming EOL warning banners (within 90 days)
+  let banners='';
+  const eolEntries = pkg.eolCycles
+    ? pkg.eolCycles.filter(c=>!c.isEol && c.eolDate)
+    : (pkg.eolDates||[]);
+  for(const e of eolEntries){
+    const eolDate=e.eolDate;
+    if(!eolDate) continue;
+    const days=daysFromNow(eolDate);
+    if(days>0 && days<=90){
+      const bg=days<=30?'var(--danger-bg)':'var(--warning-bg)';
+      const tc=days<=30?'var(--danger-text)':'var(--warning-text)';
+      banners+=`<div style="border-radius:var(--r-md);padding:8px 12px;margin-top:8px;background:${bg};color:${tc};font-size:13px;">
+        <strong>⚠ EOL in ${days} days</strong> — v${e.version||e.name} reaches end-of-life on ${new Date(eolDate).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"})}. Plan your upgrade now.
+      </div>`;
     }
   }
 
-  // Upcoming major release banners
-  for (const upcoming of (pkg.upcomingReleases||[])) {
-    banners.push(`<div class="eol-banner" style="background:var(--info-bg);color:var(--info-text);"><strong>Upcoming — v${upcoming.version}</strong> — ${upcoming.note}</div>`);
-  }
-
-  return banners.join("");
-}
-
-function renderReleases(pkg, releases) {
-  const seen=new Set(); const rows=[];
-  for(const r of releases){
-    const maj=getMajor(r.tag_name);
-    if(seen.has(maj)) continue; seen.add(maj);
-    const isEol = (pkg.eolDates||[]).some(e=>e.version===maj && daysFromNow(e.eolDate||e.date)<=0);
-    const isLatest = rows.length===0;
-    const badge = isEol ? '<span class="badge b-eol">EOL</span>' : isLatest ? '<span class="badge b-latest">Latest</span>' : '<span class="badge b-prev">v'+maj+'</span>';
-    const bg = isEol ? "background:var(--danger-bg);" : "";
-    rows.push(`<div class="rel-row" style="${bg}"><span style="font-weight:500;">${r.tag_name}</span><div style="display:flex;align-items:center;gap:8px;"><span style="color:var(--text-muted);">${timeAgo(r.published_at)}</span>${badge}</div></div>`);
-    if(rows.length>=3) break;
-  }
-  const eolBanners = renderEolBanners(pkg);
-  return `<div class="card">
+  return `<div class="card" id="pkg-card-${idx}">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
       <div><div class="pkg-name">${pkg.name}</div><div class="pkg-repo">${pkg.repo}</div></div>
     </div>
-    ${rows.join("")}
-    ${eolBanners}
-    <div class="links-row"><a href="${pkg.releases}" target="_blank">↗ Releases</a><a href="${pkg.docs}" target="_blank">↗ Docs</a></div>
+    ${rows}${banners}
+    <div class="links-row" style="margin-top:10px;">
+      <a href="${pkg.releases}" target="_blank">↗ Releases</a>
+      <a href="${pkg.docs}" target="_blank">↗ Docs</a>
+    </div>
   </div>`;
 }
 
@@ -297,12 +338,19 @@ async function loadAll() {
   ]);
 
   // Map endoflife.date cycles onto EOL_API_PACKAGES
+  // New API format uses: name, isEol, eolFrom, isMaintained, isLts, latest
   EOL_API_PACKAGES.forEach((pkg, i) => {
     const cycles = eolCycles[i] || [];
-    const arr = Array.isArray(cycles) ? cycles : Object.values(cycles);
-    pkg.eolDates = arr
-      .filter(c => c.eol && c.eol !== false && c.eol !== true)
-      .map(c => ({ version: String(c.cycle), eolDate: c.eol }));
+    pkg.eolCycles = cycles.map(c => ({
+      version: String(c.name || c.cycle),
+      label: c.label || null,
+      isLts: c.isLts || false,
+      isEol: c.isEol || false,
+      isMaintained: c.isMaintained !== false,
+      eolDate: c.eolFrom || c.eol || null,
+      latestVersion: c.latest?.name || null,
+      latestDate: c.latest?.date || null,
+    }));
   });
 
   // Map scraped Sitecore lifecycle onto SITECORE_PACKAGES
@@ -319,8 +367,7 @@ async function loadAll() {
     try{
       const rel = await fetchReleases(PACKAGES[i].repo);
       // Filter out pre-releases in the browser too
-      const stable = rel.filter(r => !r.prerelease && !/canary|alpha|beta|rc\./i.test(r.tag_name));
-      card.outerHTML = renderReleases(PACKAGES[i], stable);
+      card.outerHTML = renderPackageCard(PACKAGES[i], rel, i);
     } catch(e) {
       card.outerHTML = `<div class="card" id="pkg-card-${i}"><div class="pkg-name">${PACKAGES[i].name}</div><div class="muted" style="margin-top:6px;color:var(--danger-text);">Could not load — ${e.message}. <a href="${PACKAGES[i].releases}" target="_blank" style="color:var(--info-text);">View on GitHub ↗</a></div></div>`;
     }
