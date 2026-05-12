@@ -106,25 +106,41 @@
 const PACKAGES = [
   {
     name: "Sitecore JSS", repo: "Sitecore/jss",
-    eolDates: [{ version:"21", maintenanceDate:"2025-06-30", eolDate:"2026-06-30" }],
+    eolDates: [
+      { version:"21", eolDate:"2026-06-30" },
+      { version:"22", eolDate:"2026-06-30" },
+    ],
+    upcomingReleases: [
+      { version:"23", note:"XM/XP only — does NOT support XM Cloud or SitecoreAI. Migrate to Content SDK instead." },
+    ],
     releases: "https://github.com/Sitecore/jss/releases",
     docs: "https://doc.sitecore.com/xp/en/developers/hd/latest/sitecore-headless-development/sitecore-javascript-rendering-sdks--jss-.html"
   },
   {
+    name: "Sitecore Content SDK", repo: "Sitecore/content-sdk",
+    eolDates: [],
+    upcomingReleases: [],
+    note: "Recommended successor to JSS for XM Cloud / SitecoreAI. Currently in active support.",
+    releases: "https://github.com/Sitecore/content-sdk/releases",
+    docs: "https://developers.sitecore.com/content-sdk"
+  },
+  {
     name: "Next.js", repo: "vercel/next.js",
-    eolDates: [{ version:"14", date:"2024-10-21" }],
+    eolDates: [{ version:"14", eolDate:"2024-10-21" }],
+    upcomingReleases: [],
     releases: "https://github.com/vercel/next.js/releases",
     docs: "https://nextjs.org/docs"
   },
   {
     name: "Sitecore XM Cloud", repo: "Sitecore/xm-cloud-introduction",
     eolDates: [],
+    upcomingReleases: [],
     releases: "https://github.com/Sitecore/xm-cloud-introduction/releases",
     docs: "https://doc.sitecore.com/xmc"
   },
 ];
 
-const NPM_AUDIT_PKGS = ["next","@sitecore-jss/sitecore-jss","@sitecore-jss/sitecore-jss-nextjs","react"];
+const NPM_AUDIT_PKGS = ["next","@sitecore-jss/sitecore-jss","@sitecore-jss/sitecore-jss-nextjs","@sitecore-content-sdk/nextjs","react"];
 const CVE_WINDOW_DAYS = 30;
 
 function timeAgo(d) {
@@ -170,32 +186,33 @@ async function fetchAdvisories(pkg) {
 
 function renderEolBanners(pkg) {
   const fmt = (d) => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"});
-  return (pkg.eolDates||[]).map(eol => {
-    const banners = [];
+  const banners = [];
 
-    // Maintenance date banner
-    if (eol.maintenanceDate) {
-      const days = daysFromNow(eol.maintenanceDate);
-      if (days <= 0) {
-        banners.push(`<div class="eol-banner upcoming"><strong>Maintenance mode</strong> — v${eol.version} has been in maintenance since ${fmt(eol.maintenanceDate)}. Security fixes only, no new features. Full EOL: ${fmt(eol.eolDate||eol.date)}.</div>`);
-      } else if (days <= 90) {
-        banners.push(`<div class="eol-banner upcoming"><strong>Maintenance in ${days} days</strong> — v${eol.version} enters maintenance mode on ${fmt(eol.maintenanceDate)}. New features will stop; security fixes continue until ${fmt(eol.eolDate||eol.date)}.</div>`);
-      }
-    }
+  // Note banner (e.g. Content SDK active support note)
+  if (pkg.note) {
+    banners.push(`<div class="eol-banner" style="background:var(--info-bg);color:var(--info-text);"><strong>Note</strong> — ${pkg.note}</div>`);
+  }
 
-    // EOL date banner
+  // EOL banners
+  for (const eol of (pkg.eolDates||[])) {
     const eolDateStr = eol.eolDate || eol.date;
-    if (!eolDateStr) return banners.join("");
+    if (!eolDateStr) continue;
     const daysToEol = daysFromNow(eolDateStr);
-    if (daysToEol > 90) return banners.join("");
+    if (daysToEol > 90) continue;
     if (daysToEol > 0) {
       const urgency = daysToEol <= 30 ? "color:var(--danger-text);" : "";
       banners.push(`<div class="eol-banner upcoming"><strong>EOL in ${daysToEol} days</strong> — v${eol.version} reaches end-of-life on ${fmt(eolDateStr)}. <span style="${urgency}">No security patches after this date.</span></div>`);
     } else {
       banners.push(`<div class="eol-banner passed"><strong>EOL passed</strong> — v${eol.version} reached end-of-life on ${fmt(eolDateStr)}. Upgrade immediately.</div>`);
     }
-    return banners.join("");
-  }).join("");
+  }
+
+  // Upcoming major release banners
+  for (const upcoming of (pkg.upcomingReleases||[])) {
+    banners.push(`<div class="eol-banner" style="background:var(--info-bg);color:var(--info-text);"><strong>Upcoming — v${upcoming.version}</strong> — ${upcoming.note}</div>`);
+  }
+
+  return banners.join("");
 }
 
 function renderReleases(pkg, releases) {
@@ -203,7 +220,7 @@ function renderReleases(pkg, releases) {
   for(const r of releases){
     const maj=getMajor(r.tag_name);
     if(seen.has(maj)) continue; seen.add(maj);
-    const isEol = (pkg.eolDates||[]).some(e=>e.version===maj && daysFromNow(e.date)<=0);
+    const isEol = (pkg.eolDates||[]).some(e=>e.version===maj && daysFromNow(e.eolDate||e.date)<=0);
     const isLatest = rows.length===0;
     const badge = isEol ? '<span class="badge b-eol">EOL</span>' : isLatest ? '<span class="badge b-latest">Latest</span>' : '<span class="badge b-prev">v'+maj+'</span>';
     const bg = isEol ? "background:var(--danger-bg);" : "";

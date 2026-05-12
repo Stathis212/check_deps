@@ -16,10 +16,26 @@ const PACKAGES = [
     repo: "Sitecore/jss",
     npmPkg: "@sitecore-jss/sitecore-jss",
     watchMajorBump: true,
-    // Add known EOL dates here: { version, date }
+    // v21 and v22 both EOL June 2026. No separate maintenance phase.
     eolDates: [
-      { version: "21", maintenanceDate: "2025-06-30", eolDate: "2026-06-30" },
+      { version: "21", eolDate: "2026-06-30" },
+      { version: "22", eolDate: "2026-06-30" },
     ],
+    // Upcoming major releases to surface as heads-up (not yet released)
+    upcomingReleases: [
+      { version: "23", note: "Due March/April 2026. XM/XP only — does NOT support XM Cloud or SitecoreAI." },
+    ],
+  },
+  {
+    name: "Sitecore Content SDK",
+    repo: "Sitecore/content-sdk",
+    npmPkg: "@sitecore-content-sdk/nextjs",
+    watchMajorBump: true,
+    eolDates: [
+      // v1.x: actively supported — no EOL date yet
+    ],
+    upcomingReleases: [],
+    note: "Recommended successor to JSS for XM Cloud / SitecoreAI.",
   },
   {
     name: "Next.js",
@@ -27,8 +43,9 @@ const PACKAGES = [
     npmPkg: "next",
     watchMajorBump: true,
     eolDates: [
-      { version: "14", date: "2024-10-21" }, // Already EOL
+      { version: "14", eolDate: "2024-10-21" },
     ],
+    upcomingReleases: [],
   },
   {
     name: "Sitecore XM Cloud Starter Kit",
@@ -36,6 +53,7 @@ const PACKAGES = [
     npmPkg: null,
     watchMajorBump: true,
     eolDates: [],
+    upcomingReleases: [],
   },
 ];
 
@@ -144,37 +162,17 @@ function checkEolDates(pkg) {
   const alerts = [];
   const fmt = (d) => new Date(d).toLocaleDateString("en-GB", { day:"numeric", month:"long", year:"numeric" });
 
+  // EOL dates
   for (const eol of pkg.eolDates || []) {
-
-    // Maintenance date (if defined)
-    if (eol.maintenanceDate) {
-      const days = daysFromNow(eol.maintenanceDate);
-      if (days <= 0) {
-        alerts.push(
-          `*[MAINTENANCE MODE]* ${pkg.name} v${eol.version} entered maintenance mode on ${fmt(eol.maintenanceDate)}.\n` +
-          `Security fixes only — no new features. Full EOL: ${fmt(eol.eolDate || eol.date)}.\n` +
-          `Releases: https://github.com/${pkg.repo}/releases`
-        );
-      } else if (days <= EOL_WARN_DAYS_BEFORE) {
-        alerts.push(
-          `*[MAINTENANCE UPCOMING]* ${pkg.name} v${eol.version} enters maintenance mode in *${days} days* (${fmt(eol.maintenanceDate)}).\n` +
-          `After this date: security fixes only, no new features.\n` +
-          `Full EOL follows on ${fmt(eol.eolDate || eol.date)}.\n` +
-          `Releases: https://github.com/${pkg.repo}/releases`
-        );
-      }
-    }
-
-    // EOL date
     const eolDateStr = eol.eolDate || eol.date;
     if (!eolDateStr) continue;
     const daysToEol = daysFromNow(eolDateStr);
 
     if (daysToEol > EOL_WARN_DAYS_BEFORE) {
-      continue;
+      continue; // Too far out
     } else if (daysToEol > 0) {
       alerts.push(
-        `*[EOL UPCOMING]* ${pkg.name} v${eol.version} reaches end-of-life in *${daysToEol} days* (${fmt(eolDateStr)}).\n` +
+        `*[EOL IN ${daysToEol} DAYS]* ${pkg.name} v${eol.version} reaches end-of-life on ${fmt(eolDateStr)}.\n` +
         `No security patches after this date. Plan your upgrade now.\n` +
         `Releases: https://github.com/${pkg.repo}/releases`
       );
@@ -185,6 +183,15 @@ function checkEolDates(pkg) {
         `Releases: https://github.com/${pkg.repo}/releases`
       );
     }
+  }
+
+  // Upcoming major releases (heads-up, not yet released)
+  for (const upcoming of pkg.upcomingReleases || []) {
+    alerts.push(
+      `*[UPCOMING MAJOR]* ${pkg.name} v${upcoming.version} is on the roadmap.\n` +
+      `${upcoming.note}\n` +
+      `Releases: https://github.com/${pkg.repo}/releases`
+    );
   }
 
   return alerts;
