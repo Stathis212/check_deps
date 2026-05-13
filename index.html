@@ -103,17 +103,21 @@
 <footer>Data: GitHub Releases API &amp; GitHub Advisory Database &nbsp;·&nbsp; CVEs shown: published within last 30 days + any unseen older advisories</footer>
 
 <script>
-// Packages whose EOL is fetched live from endoflife.date API
+// Packages with EOL data from endoflife.date API
 const EOL_API_PACKAGES = [
   {
     name: "Next.js", repo: "vercel/next.js", slug: "nextjs",
     releases: "https://github.com/vercel/next.js/releases",
     docs: "https://nextjs.org/docs"
   },
+  {
+    name: "React", repo: "facebook/react", slug: "react",
+    releases: "https://github.com/facebook/react/releases",
+    docs: "https://react.dev"
+  },
 ];
 
-// Sitecore packages — EOL data fetched from .sitecore-lifecycle-cache.json
-// which is written by the scraper on every GitHub Actions run and committed
+// Sitecore packages — EOL from scraper cache; also scans release notes
 const SITECORE_PACKAGES = [
   {
     name: "Sitecore JSS", repo: "Sitecore/jss", sitecoreProduct: "jss",
@@ -132,8 +136,18 @@ const SITECORE_PACKAGES = [
   },
 ];
 
-const PACKAGES = [...SITECORE_PACKAGES, ...EOL_API_PACKAGES];
-const NPM_AUDIT_PKGS = ["next","@sitecore-jss/sitecore-jss","@sitecore-jss/sitecore-jss-nextjs","@sitecore-content-sdk/nextjs","react"];
+// GitHub-only packages — no formal EOL policy; we watch releases and scan notes
+const GITHUB_ONLY_PACKAGES = [
+  {
+    name: "TypeScript", repo: "microsoft/TypeScript",
+    note: "No formal EOL policy — release notes scanned for deprecation notices.",
+    releases: "https://github.com/microsoft/TypeScript/releases",
+    docs: "https://www.typescriptlang.org/docs/"
+  },
+];
+
+const PACKAGES = [...SITECORE_PACKAGES, ...EOL_API_PACKAGES, ...GITHUB_ONLY_PACKAGES];
+const NPM_AUDIT_PKGS = ["next","react","react-dom","@sitecore-jss/sitecore-jss","@sitecore-jss/sitecore-jss-nextjs","@sitecore-content-sdk/nextjs","typescript"];
 const CVE_WINDOW_DAYS = 30;
 
 function timeAgo(d) {
@@ -337,19 +351,21 @@ async function loadAll() {
     ...EOL_API_PACKAGES.map(p => fetchEolCycles(p.slug))
   ]);
 
-  // Map endoflife.date cycles onto EOL_API_PACKAGES
-  // New API format uses: name, isEol, eolFrom, isMaintained, isLts, latest
+  // Map endoflife.date cycles onto EOL_API_PACKAGES (Next.js, React)
   EOL_API_PACKAGES.forEach((pkg, i) => {
-    const cycles = eolCycles[i] || [];
+    const raw = eolCycles[i] || [];
+    // Handle both API v1 { result: { releases: [...] } } and flat array format
+    const cycles = Array.isArray(raw) ? raw :
+                   (raw?.result?.releases || Object.values(raw));
     pkg.eolCycles = cycles.map(c => ({
-      version: String(c.name || c.cycle),
-      label: c.label || null,
-      isLts: c.isLts || false,
-      isEol: c.isEol || false,
-      isMaintained: c.isMaintained !== false,
-      eolDate: c.eolFrom || c.eol || null,
+      version:       String(c.name || c.cycle || ""),
+      label:         c.label || null,
+      isLts:         c.isLts || false,
+      isEol:         c.isEol || (c.eol === true) || false,
+      isMaintained:  c.isMaintained !== false,
+      eolDate:       c.eolFrom || (typeof c.eol === "string" ? c.eol : null),
       latestVersion: c.latest?.name || null,
-      latestDate: c.latest?.date || null,
+      latestDate:    c.latest?.date || null,
     }));
   });
 
@@ -359,6 +375,9 @@ async function loadAll() {
       .filter(e => e.product && e.product.toLowerCase().includes(pkg.sitecoreProduct))
       .filter(e => e.eolDate);
   });
+
+  // GitHub-only packages have no EOL data — just show releases
+  GITHUB_ONLY_PACKAGES.forEach(pkg => { pkg.eolDates = []; pkg.eolCycles = []; });
 
   // Load each package card individually using stable IDs — avoids stale NodeList bug
   for(let i=0;i<PACKAGES.length;i++){
